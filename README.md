@@ -10,16 +10,18 @@ with the pieces you usually end up needing:
 - two front ends over one agent: a terminal loop and an HTTP API
 - bearer-token auth on the API, and a connection to the agno control plane
 
-It follows [Пищов](https://yalishanda.net/pishtov.html), a Bulgarian-language
-walkthrough of the same setup. The example tools scrape Bulgarian recipes from
-[gotvach.bg](https://recepti.gotvach.bg) as that tutorial does, but they are
-only a demonstration — see [Replacing the tools](#replacing-the-tools).
+Its structure follows [Пищов](https://yalishanda.net/pishtov.html), a
+Bulgarian-language walkthrough of the same setup. The example tools query the
+[Numista](https://en.numista.com) coin and banknote catalogue through its REST
+API, but they are only a demonstration — see
+[Replacing the tools](#replacing-the-tools).
 
 ## Requirements
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
 - An [OpenRouter](https://openrouter.ai) API key
+- A [Numista](https://en.numista.com) API key, for the example tools
 
 ## Setup
 
@@ -33,9 +35,17 @@ Create a `.env` file in the project root:
 # Required: model access via OpenRouter
 OPENROUTER_API_KEY=sk-or-v1-...
 
+# Required by the example tools: Numista catalogue access
+NUMISTA_API_KEY=<your Numista API key>
+
 # Required only for the HTTP API: bearer token protecting the endpoints
 OS_SECURITY_KEY=<a long random string>
 ```
+
+Get the Numista key from your account under **Profile → API**; the
+[API documentation](https://en.numista.com/api/doc/index.php) describes the
+endpoints. The free tier allows a few thousand requests a day, so OpenRouter's
+quota runs out long before Numista's does.
 
 Generate a security key with:
 
@@ -65,7 +75,7 @@ uv run agent.py
 ```
 
 ```
-Ask something: мусака с тиквички
+Ask something: what is the 1925 Bulgarian 2 leva made of?
 ```
 
 Empty line, `Ctrl-D` or `Ctrl-C` quits.
@@ -83,7 +93,7 @@ public; everything else needs the security key:
 KEY=$(grep '^OS_SECURITY_KEY=' .env | cut -d= -f2-)
 
 curl -H "Authorization: Bearer $KEY" \
-     -F 'message=мусака с тиквички' \
+     -F 'message=what is the 1925 Bulgarian 2 leva made of?' \
      http://localhost:7777/agents/1/runs
 ```
 
@@ -118,7 +128,7 @@ terminal / HTTP  →  agent  →  OpenRouter  →  model
 1. agno sends your message to the model together with a schema for each tool,
    derived from its **signature and docstring**.
 2. The model replies with a tool call rather than prose, e.g.
-   `search_recipes(query="мусака")`.
+   `search_coins(query="1925 Bulgaria 2 leva")`.
 3. agno runs that function locally and feeds its return value back.
 4. The model writes the final answer from that result.
 
@@ -178,11 +188,15 @@ In `agent.py`:
   need credits on the OpenRouter account, or requests fail with HTTP 402.
 - **Free model availability fluctuates.** Shared free pools return HTTP 429
   when saturated; swap in one of the commented alternatives.
-- **The example scrapers depend on site markup.** The CSS selectors will need
-  updating if gotvach.bg changes its HTML.
+- **The example tools need a Numista key.** Without `NUMISTA_API_KEY` the tools
+  raise immediately; the agent itself still answers from the model alone.
+- **Numista response fields are read defensively.** `get_coin` falls back to
+  `?` for anything missing, so a catalogue entry with sparse data degrades
+  rather than failing.
 
 ## Credits
 
 Based on [Пищов](https://yalishanda.net/pishtov.html) by
 [yalishanda](https://yalishanda.net), which covers the `uv` and OpenRouter
-setup and the gotvach.bg scraping tools used here as the example toolset.
+setup this project is built on. The tutorial's example tools scrape
+gotvach.bg; this repo swaps in the Numista catalogue API instead.

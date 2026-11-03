@@ -1,52 +1,69 @@
+import os
+
 import requests
 from agno.agent import Agent
 from agno.db.sqlite import SqliteDb
 from agno.models.openrouter import OpenRouter
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_URL = "https://recepti.gotvach.bg"
+NUMISTA_API = "https://api.numista.com/v3"
+CATALOGUE_URL = "https://en.numista.com/catalogue/pieces{}.html"
 
 
-def _fetch(url: str, params: dict | None = None) -> BeautifulSoup:
+def _numista(path: str, params: dict | None = None) -> dict:
+    key = os.getenv("NUMISTA_API_KEY")
+    if not key:
+        raise RuntimeError("NUMISTA_API_KEY is not set; see the README.")
     response = requests.get(
-        url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=10
+        NUMISTA_API + path,
+        params={"lang": "en", **(params or {})},
+        headers={"Numista-API-Key": key},
+        timeout=10,
     )
     response.raise_for_status()
-    return BeautifulSoup(response.text, "html.parser")
+    return response.json()
 
 
-def search_recipes(query: str) -> str:
-    """Търси рецепти в gotvach.bg и връща пълната първа рецепта и линкове към останалите.
+def search_coins(query: str) -> str:
+    """Search the Numista catalogue for coins and banknotes.
 
     Args:
-        query: Само името на ястието или продукта, например "мусака" или "тиквички".
+        query: Coin or banknote name, country or denomination, for example
+            "2 leva 1925" or "Bulgarian stotinka".
     """
-    page = _fetch(BASE_URL + "/", params={"kw": query.strip()})
-    links = page.select("div.rprev a.title")
-    if not links:
-        return "Няма намерени рецепти."
-    results = "\n".join(
-        f"- {a.get_text(strip=True)}: {a['href']}" for a in links[:20]
+    data = _numista("/types", {"q": query.strip(), "count": 20})
+    types = data.get("types", [])
+    if not types:
+        return "No matching coins found."
+    return "\n".join(
+        f"- [{t['id']}] {t.get('title', '?')}"
+        f" ({t.get('issuer', {}).get('name', '?')},"
+        f" {t.get('min_year', '?')}-{t.get('max_year', '?')})"
+        for t in types
     )
-    return f"{get_recipe(links[0]['href'])}\n\nДруги резултати:\n{results}"
 
 
-def get_recipe(url: str) -> str:
-    """Връща съставките и начина на приготвяне на конкретна рецепта от gotvach.bg.
+def get_coin(type_id: int) -> str:
+    """Return the full catalogue entry for one coin or banknote.
 
     Args:
-        url: Пълният адрес на рецептата, върнат от search_recipes.
+        type_id: Numista type id, as returned by search_coins.
     """
-    page = _fetch(url)
-    title = page.select_one("h1").get_text(strip=True)
-    products = page.select_one("section.products")
-    products = products.get_text("\n", strip=True) if products else ""
-    steps = "\n".join(p.get_text(" ", strip=True) for p in page.select("div.text p.desc"))
-    content = f"{products}\n\nНачин на приготвяне:\n{steps}"[:4000]
-    return f"{title}\n{url}\n\n{content}"
+    coin = _numista(f"/types/{type_id}")
+    fields = [
+        coin.get("title", "?"),
+        CATALOGUE_URL.format(type_id),
+        f"Issuer: {coin.get('issuer', {}).get('name', '?')}",
+        f"Years: {coin.get('min_year', '?')}-{coin.get('max_year', '?')}",
+        f"Composition: {coin.get('composition', {}).get('text', '?')}",
+        f"Weight: {coin.get('weight', '?')} g",
+        f"Diameter: {coin.get('size', '?')} mm",
+        f"Obverse: {coin.get('obverse', {}).get('description', '')}",
+        f"Reverse: {coin.get('reverse', {}).get('description', '')}",
+    ]
+    return "\n".join(fields)[:4000]
 
 
 agent = Agent(
@@ -66,11 +83,15 @@ agent = Agent(
     # model=OpenRouter(id="nvidia/nemotron-3.5-lightning:free", max_tokens=4096),
     # model=OpenRouter(id="cohere/north-mini-code:free", max_tokens=4096),
     # model=OpenRouter(id="dots-studio/dots-3-note-preview:free", max_tokens=4096),
-    instructions="You are Sergio, an AI assistant. Answer questions and provide assistance as needed.",
+    instructions=(
+        "You are Sergio, a numismatics assistant. Use the Numista catalogue "
+        "tools to answer questions about coins and banknotes. Search first, "
+        "then fetch the full entry for the type id that best matches."
+    ),
     # debug_mode=True   # note: agno uses debug_mode, not verbose
     add_history_to_context=True,
     db=SqliteDb(db_file="agent.db"),
-    tools=[search_recipes, get_recipe],
+    tools=[search_coins, get_coin],
 )
 
 if __name__ == "__main__":
